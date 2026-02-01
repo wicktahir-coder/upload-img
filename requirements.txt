@@ -1,4 +1,7 @@
-streamlit==1.30.0
-requests
-pillow
+streamlit>=1.31.0
+ultralytics>=8.1.0
+torch
+torchvision
+opencv-python-headless
+Pillow
 numpy
