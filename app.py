@@ -1,131 +1,95 @@
-import os
-import io
-import requests
-import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+from ultralytics import YOLO
+from PIL import Image
+import numpy as np
 
-st.set_page_config(page_title="Railway Wildlife Detection", layout="centered")
+st.set_page_config(
+    page_title="Railway Wildlife Detection",
+    layout="centered"
+)
 
-DEPLOY_URL = "https://predict-697f107a5bf07d5df6b6-dproatj77a-as.a.run.app/predict"
-API_KEY = os.environ.get("ULTRALYTICS_DEPLOY_API_KEY")
+@st.cache_resource
+def load_model():
+    return YOLO("best.pt")
 
-if not API_KEY:
-    st.error("Set ULTRALYTICS_DEPLOY_API_KEY in environment variables")
-    st.stop()
-
-
-def draw_boxes(image: Image.Image, predictions: list) -> Image.Image:
-    draw = ImageDraw.Draw(image)
-    width, height = image.size
-
-    try:
-        font = ImageFont.truetype("arial.ttf", 18)
-    except:
-        font = ImageFont.load_default()
-
-    for pred in predictions:
-        box = pred.get("box", {})
-        name = pred.get("name", "unknown")
-        confidence = pred.get("confidence", 0)
-
-        x1 = int(box.get("x1", 0) * width)
-        y1 = int(box.get("y1", 0) * height)
-        x2 = int(box.get("x2", 1) * width)
-        y2 = int(box.get("y2", 1) * height)
-
-        draw.rectangle([x1, y1, x2, y2], outline="lime", width=4)
-
-        label = f"{name} {confidence:.2f}"
-        bbox = draw.textbbox((x1, y1), label, font=font)
-        lw = bbox[2] - bbox[0]
-        lh = bbox[3] - bbox[1]
-
-        draw.rectangle([x1, y1 - lh - 4, x1 + lw + 4, y1], fill="lime")
-        draw.text((x1 + 2, y1 - lh - 2), label, fill="black", font=font)
-
-    return image
-
+model = load_model()
 
 st.title("Railway Wildlife Detection")
-st.caption("Cloud inference via Ultralytics deployed model")
 
-mode = st.radio("Source", ["Camera", "Upload"], horizontal=True)
+mode = st.radio(
+    "Image source",
+    ["Camera", "Upload"],
+    horizontal=True
+)
 
-image_pil = None
+image = None
+
 if mode == "Camera":
-    cam = st.camera_input("Take photo")
-    if cam:
-        image_pil = Image.open(cam).convert("RGB")
+    cam = st.camera_input("Capture image")
+    if cam is not None:
+        image = Image.open(cam).convert("RGB")
 else:
-    up = st.file_uploader("Image", type=["jpg", "jpeg", "png"])
-    if up:
-        image_pil = Image.open(up).convert("RGB")
+    up = st.file_uploader(
+        "Upload image",
+        type=["jpg", "jpeg", "png"]
+    )
+    if up is not None:
+        image = Image.open(up).convert("RGB")
 
-if image_pil is None:
+if image is None:
+    st.info("Please upload or capture an image to continue")
     st.stop()
 
-st.subheader("Input")
-st.image(image_pil, use_column_width=True)
+st.image(
+    image,
+    caption="Input image",
+    width=500
+)
 
-conf = st.slider("Confidence", 0.05, 0.95, 0.25, 0.05)
-iou = st.slider("IOU", 0.10, 0.90, 0.70, 0.05)
+conf = st.slider(
+    "Confidence threshold",
+    0.05,
+    0.95,
+    0.25,
+    0.05
+)
 
-if st.button("Run Cloud Detection", type="primary"):
-    buf = io.BytesIO()
-    image_pil.save(buf, format="JPEG", quality=90)
-    buf.seek(0)
+iou = st.slider(
+    "IOU threshold",
+    0.1,
+    0.9,
+    0.7,
+    0.05
+)
 
-    headers = {
-        "Authorization": f"Bearer {API_KEY}"
-    }
+if st.button("Run detection", type="primary"):
+    with st.spinner("Running object detection..."):
+        results = model.predict(
+            source=np.array(image),
+            conf=conf,
+            iou=iou,
+            imgsz=640,
+            device="cpu"
+        )
 
-    files = {
-        "file": ("image.jpg", buf, "image/jpeg")
-    }
+    res = results[0]
 
-    data = {
-        "conf": conf,
-        "iou": iou,
-        "imgsz": 640
-    }
+    if res.boxes is None or len(res.boxes) == 0:
+        st.warning("No detections found")
+        st.stop()
 
-    with st.spinner("Calling Ultralytics deployment..."):
-        try:
-            response = requests.post(
-                DEPLOY_URL,
-                headers=headers,
-                data=data,
-                files=files,
-                timeout=90
-            )
-            response.raise_for_status()
-            result = response.json()
+    annotated = res.plot()
+    annotated_img = Image.fromarray(annotated)
 
-            predictions = result.get("predictions") or result.get("results") or []
+    st.image(
+        annotated_img,
+        caption="Detected image",
+        width=500
+    )
 
-            if not predictions:
-                st.info("No detections found")
-                st.json(result)
-                st.stop()
-
-            annotated = draw_boxes(image_pil.copy(), predictions)
-
-            st.subheader("Results")
-            st.image(annotated, use_column_width=True)
-
-            st.subheader("Detections")
-            for pred in predictions:
-                name = pred.get("name", "unknown")
-                score = pred.get("confidence", 0)
-                st.write(f"{name} ({score:.2f})")
-
-            with st.expander("Raw API Response"):
-                st.json(result)
-
-        except requests.exceptions.RequestException as e:
-            st.error("API request failed")
-            if hasattr(e, "response") and e.response is not None:
-                st.code(e.response.text)
-        except Exception as e:
-            st.error(str(e))
+    st.subheader("Detections")
+    for box in res.boxes:
+        cls_id = int(box.cls[0])
+        name = model.names[cls_id]
+        conf_score = float(box.conf[0])
+        st.write(f"{name} ({conf_score:.2f})")
