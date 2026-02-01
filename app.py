@@ -1,21 +1,29 @@
 import streamlit as st
-from ultralytics import YOLO
 from PIL import Image
 import numpy as np
+import os
 
 st.set_page_config(
     page_title="Railway Wildlife Detection",
     layout="centered"
 )
 
-@st.cache_resource
-def load_model():
-    return YOLO("best.pt")
-
-model = load_model()
-
 st.title("Railway Wildlife Detection")
 
+# ---------- Safety checks ----------
+MODEL_PATH = "best.pt"
+
+if not os.path.exists(MODEL_PATH):
+    st.error("Model file best.pt not found in project directory")
+    st.stop()
+
+# ---------- Lazy model loading ----------
+@st.cache_resource(show_spinner="Loading YOLO model...")
+def load_model():
+    from ultralytics import YOLO
+    return YOLO(MODEL_PATH)
+
+# ---------- Image input ----------
 mode = st.radio(
     "Image source",
     ["Camera", "Upload"],
@@ -28,6 +36,7 @@ if mode == "Camera":
     cam = st.camera_input("Capture image")
     if cam is not None:
         image = Image.open(cam).convert("RGB")
+
 else:
     up = st.file_uploader(
         "Upload image",
@@ -46,6 +55,7 @@ st.image(
     width=500
 )
 
+# ---------- Parameters ----------
 conf = st.slider(
     "Confidence threshold",
     0.05,
@@ -62,14 +72,19 @@ iou = st.slider(
     0.05
 )
 
+# ---------- Detection ----------
 if st.button("Run detection", type="primary"):
+
+    model = load_model()
+
     with st.spinner("Running object detection..."):
         results = model.predict(
             source=np.array(image),
             conf=conf,
             iou=iou,
             imgsz=640,
-            device="cpu"
+            device="cpu",
+            verbose=False
         )
 
     res = results[0]
@@ -78,8 +93,7 @@ if st.button("Run detection", type="primary"):
         st.warning("No detections found")
         st.stop()
 
-    annotated = res.plot()
-    annotated_img = Image.fromarray(annotated)
+    annotated_img = Image.fromarray(res.plot())
 
     st.image(
         annotated_img,
@@ -88,8 +102,9 @@ if st.button("Run detection", type="primary"):
     )
 
     st.subheader("Detections")
+
     for box in res.boxes:
         cls_id = int(box.cls[0])
-        name = model.names[cls_id]
-        conf_score = float(box.conf[0])
-        st.write(f"{name} ({conf_score:.2f})")
+        label = model.names[cls_id]
+        score = float(box.conf[0])
+        st.write(f"{label} ({score:.2f})")
